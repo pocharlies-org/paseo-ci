@@ -23,6 +23,7 @@ const POLL_SETTLED_MS = 120_000; // a settled run still changes on a new push or
 /** What each agent's pill shows, shared with the popover so both read one fetch. */
 export interface CiEntry {
   ref: PrRef;
+  strong: boolean; // the agent's own PR (see lastPrRef): a later mere mention does not replace it
   ci: CiStatus | null;
 }
 const entries = new Map<string, CiEntry>();
@@ -95,9 +96,15 @@ export function registerCiPills(
     };
 
     const see = (item: unknown) => {
-      const ref = lastPrRef(JSON.stringify(item));
-      if (!ref || !current() || sameRef(ref, entries.get(agent.id)?.ref ?? null)) return;
-      entries.set(agent.id, { ref, ci: null });
+      const found = lastPrRef(JSON.stringify(item));
+      const had = entries.get(agent.id);
+      if (!found || !current() || (had?.strong && !found.strong)) return;
+      if (had && sameRef(found.ref, had.ref)) {
+        had.strong ||= found.strong;
+        return;
+      }
+      const ref = found.ref;
+      entries.set(agent.id, { ref, strong: found.strong, ci: null });
       const button = { title: `CI de ${ref.repo}#${ref.number}`, icon: icons[ref.forge], label: pillLabel(ref, null) };
       if (entry.reg) entry.reg.update(button);
       else entry.reg = client.addComposerPill({ id: "ci", workspaceId, agentId: agent.id, button: { ...button, behavior: { kind: "popover", Content } } });
@@ -108,7 +115,7 @@ export function registerCiPills(
     const bootstrap = async () => {
       const page = await handle.timeline.refetch({ direction: "before", limit: 200, projection: "projected" }).catch(() => null);
       if (!page || !current()) return;
-      see(page.entries.map((row) => row.item)); // one pass over the page: its last reference wins
+      see(page.entries.map((row) => row.item)); // one pass over the page: its last strong reference, else its last mention
     };
     const sub = handle.timeline.subscribe((e) => {
       if (!current()) return;

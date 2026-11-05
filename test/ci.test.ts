@@ -4,20 +4,25 @@ import { lastPrRef, overall, pillLabel } from "../shared/ci.ts";
 import { ghCheck } from "../server/forges.ts";
 
 test("lastPrRef: every form, the last one wins", () => {
-  assert.deepEqual(lastPrRef("ver https://github.com/pocharlies-org/dgx-infra/pull/1821 ya"), {
-    forge: "github", repo: "pocharlies-org/dgx-infra", number: 1821,
-  });
-  assert.deepEqual(lastPrRef("ESPERA: ci pocharlies-org/dgx-infra#1821 → con el gate"), {
-    forge: "github", repo: "pocharlies-org/dgx-infra", number: 1821,
-  });
-  assert.deepEqual(lastPrRef("gh pr merge 1821 -R pocharlies-org/dgx-infra --squash"), {
-    forge: "github", repo: "pocharlies-org/dgx-infra", number: 1821,
-  });
-  assert.deepEqual(lastPrRef("a/b#1 y luego https://bitbucket.org/ws/repo/pull-requests/7"), {
-    forge: "bitbucket", repo: "ws/repo", number: 7,
-  });
+  const ref = (text: string) => lastPrRef(text)?.ref ?? null;
+  const pr1821 = { forge: "github", repo: "pocharlies-org/dgx-infra", number: 1821 };
+  assert.deepEqual(ref("ver https://github.com/pocharlies-org/dgx-infra/pull/1821 ya"), pr1821);
+  assert.deepEqual(ref("la CI de pocharlies-org/dgx-infra#1821 → con el gate"), pr1821);
+  assert.deepEqual(ref("gh pr view 1821 -R pocharlies-org/dgx-infra --json state"), pr1821);
+  assert.deepEqual(ref("a/b#1 y luego https://bitbucket.org/ws/repo/pull-requests/7"), { forge: "bitbucket", repo: "ws/repo", number: 7 });
   assert.equal(lastPrRef("k8s-paseo-pocharlies#7 y issue #12"), null); // no owner: not a reference we can read
   assert.equal(lastPrRef("https://github.com/o/r/issues/3"), null);
+});
+
+test("lastPrRef: the agent's own PR beats a later mention", () => {
+  // the session of the screenshot: it waits on #1821 and then cites #1822, already merged, as the cause of a failure
+  const text = "ESPERA: ci pocharlies-org/dgx-infra#1821 → fusiono. INFRA-1186 (https://github.com/pocharlies-org/dgx-infra/pull/1822)";
+  assert.deepEqual(lastPrRef(text), { ref: { forge: "github", repo: "pocharlies-org/dgx-infra", number: 1821 }, strong: true });
+  assert.equal(lastPrRef("gh pr merge 9 -R o/r --squash")?.strong, true);
+  assert.deepEqual(lastPrRef('{"command":"gh pr create --fill","output":"https://github.com/o/r/pull/12"}'), {
+    ref: { forge: "github", repo: "o/r", number: 12 }, strong: true,
+  });
+  assert.equal(lastPrRef("gh pr view 1822 -R o/r")?.strong, false);
 });
 
 test("overall and label", () => {

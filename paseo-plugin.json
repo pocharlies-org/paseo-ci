@@ -1,0 +1,6 @@
+{
+  "id": "paseo-ci",
+  "name": "Estado de la CI",
+  "description": "A composer pill with the GitHub or Bitbucket logo and the CI state of the last pull request the agent mentioned; tap it for every check, its state, duration and link.",
+  "requirements": { "paseo": ">=0.11.2" }
+}

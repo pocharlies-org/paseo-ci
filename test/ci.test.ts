@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { lastPrRef, overall, pillLabel } from "../shared/ci.ts";
+import { lastPrRef, overall, pillLabel, tone } from "../shared/ci.ts";
 import { ghCheck } from "../server/forges.ts";
 
 test("lastPrRef: every form, the last one wins", () => {
@@ -45,4 +45,16 @@ test("ghCheck: CheckRun and StatusContext", () => {
   assert.equal(ghCheck({ __typename: "CheckRun", name: "a", status: "COMPLETED", conclusion: "TIMED_OUT" }).state, "failure");
   const s = ghCheck({ __typename: "StatusContext", context: "argo", state: "PENDING", targetUrl: "u", startedAt: "0001-01-01T00:00:00Z" });
   assert.deepEqual([s.name, s.state, s.url, s.startedAt], ["argo", "pending", "u", null]);
+});
+
+test("tone: yellow running, red failed, green green or merged", () => {
+  const ci = (prState: string, state: "pending" | "success" | "failure" | "none", error: string | null = null) =>
+    ({ title: "", url: "", prState, branch: "", state, checks: [], error });
+  assert.equal(tone(ci("OPEN", "pending")), "pending");
+  assert.equal(tone(ci("OPEN", "failure")), "failure");
+  assert.equal(tone(ci("OPEN", "success")), "success");
+  assert.equal(tone(ci("MERGED", "failure")), "success"); // merged wins: the PR is done
+  assert.equal(tone(ci("OPEN", "none")), null);
+  assert.equal(tone(ci("OPEN", "pending", "gh: 404")), null);
+  assert.equal(tone(null), null);
 });

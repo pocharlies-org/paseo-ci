@@ -25,7 +25,7 @@ export function CiPopover(props: PluginButtonContentProps) {
   }, []);
   const entry = ciEntry(agentId);
   const color = (s: CheckState) =>
-    s === "success" ? c.statusSuccess : s === "failure" ? c.statusDanger : s === "pending" ? c.accent : c.foregroundMuted;
+    s === "success" ? c.statusSuccess : s === "failure" ? c.statusDanger : s === "pending" ? c.statusWarning : c.foregroundMuted;
   const muted = { color: c.foregroundMuted, fontSize: 12 };
 
   if (!entry) return <Text style={{ ...muted, padding: 12 }}>Sin pull request en esta conversación.</Text>;

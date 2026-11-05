@@ -36,23 +36,42 @@ export type CheckState = z.output<typeof state>;
 /** The CI of one pull request, read by the daemon with its own credentials (gh, Bitbucket token). */
 export const ciGet = defineRpc({ name: "ci.get", input: prRefSchema.strict(), output: ciSchema });
 
-// Order matters only for ties at one position; the last reference in the text wins.
-const PATTERNS: Array<[RegExp, (m: RegExpExecArray) => PrRef]> = [
-  [/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/g, (m) => ({ forge: "github", repo: m[1], number: +m[2] })],
-  [/bitbucket\.org\/([\w.-]+\/[\w.-]+)\/pull-requests\/(\d+)/g, (m) => ({ forge: "bitbucket", repo: m[1], number: +m[2] })],
-  [/gh pr \w+ (\d+)\b[^\n"]*?(?:-R|--repo)[ =]([\w.-]+\/[\w.-]+)/g, (m) => ({ forge: "github", repo: m[2], number: +m[1] })],
-  [/(?<![\w./-])([\w.-]+\/[\w.-]+)#(\d+)\b/g, (m) => ({ forge: "github", repo: m[1], number: +m[2] })],
+const gh = (repo: string, n: string): PrRef => ({ forge: "github", repo, number: +n });
+const R = "([\\w.-]+\\/[\\w.-]+)";
+
+// A mention is any reference; a strong one says the PR is the agent's own: its `ESPERA: ci|merge|review` line, the
+// checks or merge it runs, or the URL `gh pr create` printed. Agents also cite PRs they only read (`gh pr view`, «ya
+// fusionados en master»): the last strong reference wins over any later mention.
+const STRONG: Array<[RegExp, (m: RegExpExecArray) => PrRef]> = [
+  [new RegExp(`ESPERA:\\s*(?:ci|merge|review)\\s+${R}#(\\d+)`, "g"), (m) => gh(m[1], m[2])],
+  [new RegExp(`gh pr (?:checks|merge) (\\d+)\\b[^\\n"]*?(?:-R|--repo)[ =]${R}`, "g"), (m) => gh(m[2], m[1])],
+];
+const URLS: Array<[RegExp, (m: RegExpExecArray) => PrRef]> = [
+  [new RegExp(`github\\.com\\/${R}\\/pull\\/(\\d+)`, "g"), (m) => gh(m[1], m[2])],
+  [new RegExp(`bitbucket\\.org\\/${R}\\/pull-requests\\/(\\d+)`, "g"), (m) => ({ forge: "bitbucket", repo: m[1], number: +m[2] })],
+];
+const MENTIONS: Array<[RegExp, (m: RegExpExecArray) => PrRef]> = [
+  ...URLS,
+  [new RegExp(`gh pr \\w+ (\\d+)\\b[^\\n"]*?(?:-R|--repo)[ =]${R}`, "g"), (m) => gh(m[2], m[1])],
+  [new RegExp(`(?<![\\w./-])${R}#(\\d+)\\b`, "g"), (m) => gh(m[1], m[2])],
 ];
 
-/** The last pull request a piece of text names: a GitHub or Bitbucket URL, `owner/repo#N`, or `gh pr <verb> N -R owner/repo`. */
-export function lastPrRef(text: string): PrRef | null {
+function last(text: string, patterns: Array<[RegExp, (m: RegExpExecArray) => PrRef]>): PrRef | null {
   let best: { at: number; ref: PrRef } | null = null;
-  for (const [re, make] of PATTERNS) {
+  for (const [re, make] of patterns) {
     for (const m of text.matchAll(re)) {
       if (!best || m.index! >= best.at) best = { at: m.index!, ref: make(m as RegExpExecArray) };
     }
   }
   return best?.ref ?? null;
+}
+
+/** The pull request a piece of text points at: its last strong reference, else its last mention. */
+export function lastPrRef(text: string): { ref: PrRef; strong: boolean } | null {
+  const strong = last(text, /gh pr create/.test(text) ? [...STRONG, ...URLS] : STRONG);
+  if (strong) return { ref: strong, strong: true };
+  const mention = last(text, MENTIONS);
+  return mention ? { ref: mention, strong: false } : null;
 }
 
 export const sameRef = (a: PrRef | null, b: PrRef | null) =>

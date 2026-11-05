@@ -83,6 +83,14 @@ export function overall(checks: ReadonlyArray<{ state: CheckState }>): CheckStat
   return checks.length ? "success" : "none";
 }
 
+/** The pill's colour: yellow while checks run, red when one failed, green once green or merged; none when unknown. */
+export type Tone = "pending" | "failure" | "success" | null;
+export function tone(ci: CiStatus | null): Tone {
+  if (!ci || ci.error) return null;
+  if (ci.prState === "MERGED") return "success";
+  return ci.state === "none" ? null : ci.state;
+}
+
 export const GLYPH: Record<CheckState, string> = { success: "✓", failure: "✗", pending: "◐", none: "·" };
 
 /** The pill's short label: `#1821 ◐ 3/7`, `#1821 ✓`, `#1821 ✗ 2`. */

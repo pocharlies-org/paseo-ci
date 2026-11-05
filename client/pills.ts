@@ -6,7 +6,7 @@ import type {
   PluginClientContext,
 } from "@getpaseo/plugin/client";
 import type { ComponentType } from "react";
-import { ciGet, lastPrRef, pillLabel, sameRef, type CiStatus, type PrRef } from "../shared/ci.ts";
+import { ciGet, lastPrRef, pillLabel, sameRef, tone, type CiStatus, type PrRef, type Tone } from "../shared/ci.ts";
 
 // The slice of the host this module uses: index.client.tsx hands in the plugin context, the tests a fake.
 export interface CiPillClient {
@@ -44,13 +44,14 @@ interface Live {
 
 /**
  * One composer pill per agent that names a pull request (URL, `owner/repo#N`, `gh pr … N -R owner/repo`): the logo of
- * its forge and the state of its CI; the popover lists every check. The last reference in the timeline wins.
+ * its forge, tinted by the state of its CI, and that state; the popover lists every check. The agent's own PR wins (see
+ * lastPrRef).
  * shortcut: one PR per agent (the last named), upgrade if agents juggling several PRs need a list.
  */
 export function registerCiPills(
   client: CiPillClient,
   Content: ComponentType<PluginButtonContentProps>,
-  icons: Record<PrRef["forge"], PluginButtonIcon>,
+  icon: (forge: PrRef["forge"], tone: Tone) => PluginButtonIcon,
 ): () => void {
   const live = new Map<string, Live>();
   const lifetime = new AbortController();
@@ -90,7 +91,7 @@ export function registerCiPills(
       const ci = await client.rpc(ciGet, e.ref).catch((err: Error) => ({ ...noCi, error: String(err.message) }));
       if (!current() || entries.get(agent.id) !== e) return; // dropped, or a newer PR replaced it meanwhile
       e.ci = ci;
-      entry.reg?.update({ label: pillLabel(e.ref, ci) });
+      entry.reg?.update({ label: pillLabel(e.ref, ci), icon: icon(e.ref.forge, tone(ci)) });
       emit();
       entry.timer = setTimeout(() => void poll(), ci.state === "pending" || ci.error ? POLL_RUNNING_MS : POLL_SETTLED_MS);
     };
@@ -105,7 +106,7 @@ export function registerCiPills(
       }
       const ref = found.ref;
       entries.set(agent.id, { ref, strong: found.strong, ci: null });
-      const button = { title: `CI de ${ref.repo}#${ref.number}`, icon: icons[ref.forge], label: pillLabel(ref, null) };
+      const button = { title: `CI de ${ref.repo}#${ref.number}`, icon: icon(ref.forge, null), label: pillLabel(ref, null) };
       if (entry.reg) entry.reg.update(button);
       else entry.reg = client.addComposerPill({ id: "ci", workspaceId, agentId: agent.id, button: { ...button, behavior: { kind: "popover", Content } } });
       emit();

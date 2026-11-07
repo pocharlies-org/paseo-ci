@@ -36,6 +36,14 @@ export type CheckState = z.output<typeof state>;
 /** The CI of one pull request, read by the daemon with its own credentials (gh, Bitbucket token). */
 export const ciGet = defineRpc({ name: "ci.get", input: prRefSchema.strict(), output: ciSchema });
 
+/** Each agent's PR (see lastPrRef), read by the daemon from its timeline: the client never downloads the timelines. */
+const foundSchema = z.object({ ref: prRefSchema, strong: z.boolean() }).nullable();
+export const ciRefs = defineRpc({
+  name: "ci.refs",
+  input: z.object({ agentIds: z.array(z.string()) }).strict(),
+  output: z.object({ refs: z.record(z.string(), foundSchema) }),
+});
+
 const gh = (repo: string, n: string): PrRef => ({ forge: "github", repo, number: +n });
 const R = "([\\w.-]+\\/[\\w.-]+)";
 

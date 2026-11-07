@@ -6,7 +6,7 @@ import type {
   PluginClientContext,
 } from "@getpaseo/plugin/client";
 import type { ComponentType } from "react";
-import { ciGet, lastPrRef, pillLabel, sameRef, tone, type CiStatus, type PrRef, type Tone } from "../shared/ci.ts";
+import { ciGet, ciRefs, lastPrRef, pillLabel, sameRef, tone, type CiStatus, type PrRef, type Tone } from "../shared/ci.ts";
 
 // The slice of the host this module uses: index.client.tsx hands in the plugin context, the tests a fake.
 export interface CiPillClient {
@@ -40,6 +40,7 @@ interface Live {
   release: () => Promise<void>;
   reg: PluginButtonRegistration | null;
   timer: ReturnType<typeof setTimeout> | null;
+  see: (found: ReturnType<typeof lastPrRef>) => void;
 }
 
 /**
@@ -58,6 +59,21 @@ export function registerCiPills(
   let stopped = false;
   let stopAgents: (() => void) | undefined;
   let agentsSub: { release(): Promise<void> } | undefined;
+
+  // One ci.refs for every agent whose PR is wanted now: the agent list arrives at once, restored subscriptions in bursts.
+  const wanted = new Set<string>();
+  let batch: ReturnType<typeof setTimeout> | null = null;
+  const lookup = (agentId: string) => {
+    wanted.add(agentId);
+    batch ??= setTimeout(() => {
+      batch = null;
+      const agentIds = [...wanted];
+      wanted.clear();
+      void client.rpc(ciRefs, { agentIds }).then(({ refs }) => {
+        for (const id of agentIds) live.get(id)?.see(refs[id] ?? null);
+      }, () => {});
+    }, 0);
+  };
 
   const drop = (agentId: string) => {
     const l = live.get(agentId);
@@ -78,8 +94,7 @@ export function registerCiPills(
       drop(agent.id); // moved workspace: the pill is registered under the old one
     }
     const workspaceId = agent.workspaceId;
-    const handle = client.paseo.agents.ref(agent.id);
-    const entry: Live = { workspaceId, release: () => Promise.resolve(), reg: null, timer: null };
+    const entry: Live = { workspaceId, release: () => Promise.resolve(), reg: null, timer: null, see: () => {} };
     live.set(agent.id, entry);
     const current = () => live.get(agent.id) === entry;
 
@@ -96,8 +111,7 @@ export function registerCiPills(
       entry.timer = setTimeout(() => void poll(), ci.state === "pending" || ci.error ? POLL_RUNNING_MS : POLL_SETTLED_MS);
     };
 
-    const see = (item: unknown) => {
-      const found = lastPrRef(JSON.stringify(item));
+    entry.see = (found) => {
       const had = entries.get(agent.id);
       if (!found || !current() || (had?.strong && !found.strong)) return;
       if (had && sameRef(found.ref, had.ref)) {
@@ -113,19 +127,14 @@ export function registerCiPills(
       void poll();
     };
 
-    const bootstrap = async () => {
-      const page = await handle.timeline.refetch({ direction: "before", limit: 200, projection: "projected" }).catch(() => null);
-      if (!page || !current()) return;
-      see(page.entries.map((row) => row.item)); // one pass over the page: its last strong reference, else its last mention
-    };
-    const sub = handle.timeline.subscribe((e) => {
+    const sub = client.paseo.agents.ref(agent.id).timeline.subscribe((e) => {
       if (!current()) return;
-      if (e.event.type === "timeline") see(e.event.item);
-      else if (e.event.type === "replacement" || e.event.type === "subscription_restored") void bootstrap();
+      if (e.event.type === "timeline") entry.see(lastPrRef(JSON.stringify(e.event.item)));
+      else if (e.event.type === "replacement" || e.event.type === "subscription_restored") lookup(agent.id);
     });
     sub.ready.catch(() => {});
     entry.release = () => sub.release();
-    void bootstrap();
+    lookup(agent.id);
   };
 
   void client.paseo.agents.list({ subscribe: {}, signal: lifetime.signal }).then(
@@ -154,6 +163,7 @@ export function registerCiPills(
 
   return () => {
     stopped = true;
+    if (batch) clearTimeout(batch);
     lifetime.abort();
     stopAgents?.();
     void agentsSub?.release().catch(() => {});

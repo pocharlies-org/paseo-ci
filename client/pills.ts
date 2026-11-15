@@ -108,6 +108,8 @@ export function registerCiPills(
       e.ci = ci;
       entry.reg?.update({ label: pillLabel(e.ref, ci), icon: icon(e.ref.forge, tone(ci)) });
       emit();
+      // shortcut: <a merged, closed, declined or superseded PR is not polled again>, <re-poll if reopening PRs becomes common>
+      if (ci.prState && ci.prState !== "OPEN") return;
       entry.timer = setTimeout(() => void poll(), ci.state === "pending" || ci.error ? POLL_RUNNING_MS : POLL_SETTLED_MS);
     };
 

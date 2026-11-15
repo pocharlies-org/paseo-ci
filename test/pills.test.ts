@@ -34,3 +34,36 @@ test("registerCiPills: one ci.refs for every agent, no timeline download", async
   assert.deepEqual(calls.filter((c) => c.name === "ci.refs").map((c) => c.input), [{ agentIds: ["a", "b"] }]);
   assert.deepEqual(pills, ["a #7"]);
 });
+
+test("registerCiPills: a merged PR is read once and not polled again", async () => {
+  let gets = 0;
+  const client = {
+    addComposerPill: () => ({ update() {}, remove() {} }),
+    rpc: async (contract: any) => {
+      if (contract.name === "ci.refs") return { refs: { a: { ref: { forge: "github", repo: "o/r", number: 7 }, strong: true } } };
+      gets++;
+      return { title: "", url: "", prState: "MERGED", branch: "", state: "success", checks: [], error: null };
+    },
+    paseo: {
+      agents: {
+        list: async () => ({
+          entries: [{ agent: { id: "a", status: "idle", workspaceId: "w" } }],
+          subscription: { subscribe: () => () => {}, release: async () => {} },
+        }),
+        ref: () => ({ timeline: { subscribe: () => ({ ready: Promise.resolve(), release: async () => {} }) } }),
+      },
+    },
+  } as unknown as CiPillClient;
+  const realSetTimeout = globalThis.setTimeout;
+  const timers: number[] = [];
+  globalThis.setTimeout = ((fn: () => void, ms?: number) => (timers.push(ms ?? 0), realSetTimeout(fn, 0))) as typeof setTimeout;
+  try {
+    const stop = registerCiPills(client, () => null, () => ({ name: "x" }) as never);
+    await new Promise((r) => realSetTimeout(r, 20));
+    stop();
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+  assert.equal(gets, 1);
+  assert.ok(!timers.some((ms) => ms >= 20_000), `polls scheduled: ${timers}`);
+});

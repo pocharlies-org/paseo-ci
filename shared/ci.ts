@@ -36,12 +36,15 @@ export type CheckState = z.output<typeof state>;
 /** The CI of one pull request, read by the daemon with its own credentials (gh, Bitbucket token). */
 export const ciGet = defineRpc({ name: "ci.get", input: prRefSchema.strict(), output: ciSchema });
 
-/** Each agent's PR (see lastPrRef), read by the daemon from its timeline: the client never downloads the timelines. */
+/**
+ * Each agent's PR (see lastPrRef) and whether it is waiting on GitHub (see esperaGithub), read by the daemon from its
+ * timeline: the client never downloads the timelines.
+ */
 const foundSchema = z.object({ ref: prRefSchema, strong: z.boolean() }).nullable();
 export const ciRefs = defineRpc({
   name: "ci.refs",
   input: z.object({ agentIds: z.array(z.string()) }).strict(),
-  output: z.object({ refs: z.record(z.string(), foundSchema) }),
+  output: z.object({ refs: z.record(z.string(), foundSchema), esperas: z.record(z.string(), z.boolean()) }),
 });
 
 const gh = (repo: string, n: string): PrRef => ({ forge: "github", repo, number: +n });
@@ -84,6 +87,20 @@ export function lastPrRef(text: string): { ref: PrRef; strong: boolean } | null 
 
 export const sameRef = (a: PrRef | null, b: PrRef | null) =>
   !!a && !!b && a.forge === b.forge && a.repo === b.repo && a.number === b.number;
+
+// The kinds of `ESPERA:` the supervisor wakes with a GitHub event (skill pr-watcher): while the session's last own word
+// is one of these, its pill turns — Dani sees at a glance that the wait is on GitHub and not on ArgoCD (25-11).
+export const ESPERA_GITHUB = /ESPERA:\s*(?:ci|merge|review|run)\b/;
+
+/** Whether the session's last own word is a GitHub-side ESPERA: walk its timeline items oldest first (the client folds one at a time). */
+export function esperaGithub(items: ReadonlyArray<{ type?: string; text?: string }>): boolean {
+  let waiting = false;
+  for (const it of items) {
+    if (it.type === "user_message") waiting = false; // a new turn started: the wait is over until its final message says otherwise
+    else if (it.type === "assistant_message") waiting = ESPERA_GITHUB.test(it.text ?? "");
+  }
+  return waiting;
+}
 
 export function overall(checks: ReadonlyArray<{ state: CheckState }>): CheckState {
   if (checks.some((c) => c.state === "failure")) return "failure";

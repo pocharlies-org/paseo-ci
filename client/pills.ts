@@ -6,7 +6,7 @@ import type {
   PluginClientContext,
 } from "@getpaseo/plugin/client";
 import type { ComponentType } from "react";
-import { ciGet, ciRefs, lastPrRef, pillLabel, sameRef, tone, type CiStatus, type PrRef, type Tone } from "../shared/ci.ts";
+import { ESPERA_GITHUB, ciGet, ciRefs, lastPrRef, pillLabel, sameRef, tone, type CiStatus, type PrRef, type Tone } from "../shared/ci.ts";
 
 // The slice of the host this module uses: index.client.tsx hands in the plugin context, the tests a fake.
 export interface CiPillClient {
@@ -40,7 +40,10 @@ interface Live {
   release: () => Promise<void>;
   reg: PluginButtonRegistration | null;
   timer: ReturnType<typeof setTimeout> | null;
-  see: (found: ReturnType<typeof lastPrRef>) => void;
+  waiting: boolean; // the session's last word is an ESPERA on GitHub: its icon turns (Dani 25-11)
+  angle: number;
+  spin: ReturnType<typeof setInterval> | null;
+  see: (found: ReturnType<typeof lastPrRef>, waiting?: boolean) => void;
 }
 
 /**
@@ -52,7 +55,7 @@ interface Live {
 export function registerCiPills(
   client: CiPillClient,
   Content: ComponentType<PluginButtonContentProps>,
-  icon: (forge: PrRef["forge"], tone: Tone) => PluginButtonIcon,
+  icon: (forge: PrRef["forge"], tone: Tone, angle: number | null) => PluginButtonIcon,
 ): () => void {
   const live = new Map<string, Live>();
   const lifetime = new AbortController();
@@ -69,8 +72,8 @@ export function registerCiPills(
       batch = null;
       const agentIds = [...wanted];
       wanted.clear();
-      void client.rpc(ciRefs, { agentIds }).then(({ refs }) => {
-        for (const id of agentIds) live.get(id)?.see(refs[id] ?? null);
+      void client.rpc(ciRefs, { agentIds }).then(({ refs, esperas }) => {
+        for (const id of agentIds) live.get(id)?.see(refs[id] ?? null, esperas?.[id] ?? false);
       }, () => {});
     }, 0);
   };
@@ -80,6 +83,7 @@ export function registerCiPills(
     if (!l) return;
     live.delete(agentId);
     if (l.timer) clearTimeout(l.timer);
+    if (l.spin) clearInterval(l.spin);
     l.reg?.remove();
     entries.delete(agentId);
     emit();
@@ -94,9 +98,26 @@ export function registerCiPills(
       drop(agent.id); // moved workspace: the pill is registered under the old one
     }
     const workspaceId = agent.workspaceId;
-    const entry: Live = { workspaceId, release: () => Promise.resolve(), reg: null, timer: null, see: () => {} };
+    const entry: Live = { workspaceId, release: () => Promise.resolve(), reg: null, timer: null, waiting: false, angle: 0, spin: null, see: () => {} };
     live.set(agent.id, entry);
     const current = () => live.get(agent.id) === entry;
+
+    const paintIcon = () => {
+      const e = entries.get(agent.id);
+      if (e) entry.reg?.update({ icon: icon(e.ref.forge, tone(e.ci), entry.waiting ? entry.angle : null) });
+    };
+    // While the session waits on GitHub its logo turns (30° every 150 ms): a JS step, not SMIL, so it moves on every
+    // renderer that shows the svg at all. shortcut: <one shared clock would be cheaper if many pills ever spin at once>.
+    const setWaiting = (v: boolean) => {
+      if (entry.waiting === v) return;
+      entry.waiting = v;
+      if (v) entry.spin = setInterval(() => { entry.angle = (entry.angle + 30) % 360; paintIcon(); }, 150);
+      else {
+        if (entry.spin) clearInterval(entry.spin);
+        entry.spin = null;
+        paintIcon();
+      }
+    };
 
     const poll = async () => {
       if (entry.timer) clearTimeout(entry.timer);
@@ -106,23 +127,25 @@ export function registerCiPills(
       const ci = await client.rpc(ciGet, e.ref).catch((err: Error) => ({ ...noCi, error: String(err.message) }));
       if (!current() || entries.get(agent.id) !== e) return; // dropped, or a newer PR replaced it meanwhile
       e.ci = ci;
-      entry.reg?.update({ label: pillLabel(e.ref, ci), icon: icon(e.ref.forge, tone(ci)) });
+      entry.reg?.update({ label: pillLabel(e.ref, ci), icon: icon(e.ref.forge, tone(ci), entry.waiting ? entry.angle : null) });
       emit();
       // shortcut: <a merged, closed, declined or superseded PR is not polled again>, <re-poll if reopening PRs becomes common>
       if (ci.prState && ci.prState !== "OPEN") return;
       entry.timer = setTimeout(() => void poll(), ci.state === "pending" || ci.error ? POLL_RUNNING_MS : POLL_SETTLED_MS);
     };
 
-    entry.see = (found) => {
+    entry.see = (found, waiting) => {
+      if (!found || !current()) return;
+      if (waiting !== undefined) setWaiting(waiting);
       const had = entries.get(agent.id);
-      if (!found || !current() || (had?.strong && !found.strong)) return;
+      if (had?.strong && !found.strong) return;
       if (had && sameRef(found.ref, had.ref)) {
         had.strong ||= found.strong;
         return;
       }
       const ref = found.ref;
       entries.set(agent.id, { ref, strong: found.strong, ci: null });
-      const button = { title: `CI de ${ref.repo}#${ref.number}`, icon: icon(ref.forge, null), label: pillLabel(ref, null) };
+      const button = { title: `CI de ${ref.repo}#${ref.number}`, icon: icon(ref.forge, null, entry.waiting ? entry.angle : null), label: pillLabel(ref, null) };
       if (entry.reg) entry.reg.update(button);
       else entry.reg = client.addComposerPill({ id: "ci", workspaceId, agentId: agent.id, button: { ...button, behavior: { kind: "popover", Content } } });
       emit();
@@ -131,8 +154,14 @@ export function registerCiPills(
 
     const sub = client.paseo.agents.ref(agent.id).timeline.subscribe((e) => {
       if (!current()) return;
-      if (e.event.type === "timeline") entry.see(lastPrRef(JSON.stringify(e.event.item)));
-      else if (e.event.type === "replacement" || e.event.type === "subscription_restored") lookup(agent.id);
+      if (e.event.type === "timeline") {
+        // The wait lives in the session's own words: its final message's ESPERA raises the spin, the next turn's first
+        // message (the supervisor's EVENTO wake) drops it. Tool results never move it.
+        const item = e.event.item as { type?: string; text?: string };
+        if (item.type === "assistant_message") setWaiting(ESPERA_GITHUB.test(item.text ?? ""));
+        else if (item.type === "user_message") setWaiting(false);
+        entry.see(lastPrRef(JSON.stringify(e.event.item)));
+      } else if (e.event.type === "replacement" || e.event.type === "subscription_restored") lookup(agent.id);
     });
     sub.ready.catch(() => {});
     entry.release = () => sub.release();

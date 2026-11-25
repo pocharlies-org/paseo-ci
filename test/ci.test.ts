@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { lastPrRef, overall, pillLabel, tone } from "../shared/ci.ts";
+import { esperaGithub, lastPrRef, overall, pillLabel, tone } from "../shared/ci.ts";
 import { ghCheck } from "../server/forges.ts";
 
 test("lastPrRef: every form, the last one wins", () => {
@@ -57,4 +57,11 @@ test("tone: yellow running, red failed, green green or merged", () => {
   assert.equal(tone(ci("OPEN", "none")), null);
   assert.equal(tone(ci("OPEN", "pending", "gh: 404")), null);
   assert.equal(tone(null), null);
+});
+
+test("esperaGithub: turns only while the last own word is a GitHub ESPERA", () => {
+  assert.equal(esperaGithub([{ type: "assistant_message", text: "ESPERA: ci o/r#7 ~25m → fusionar" }]), true);
+  assert.equal(esperaGithub([{ type: "assistant_message", text: "ESPERA: argocd paseo ~3m → pin" }]), false);
+  assert.equal(esperaGithub([{ type: "assistant_message", text: "ESPERA: ci o/r#7" }, { type: "user_message", text: "EVENTO: CI verde" }]), false);
+  assert.equal(esperaGithub([{ type: "user_message", text: "sigue" }, { type: "tool_call" }, { type: "assistant_message", text: "ESPERA: merge ~10m" }]), true);
 });
